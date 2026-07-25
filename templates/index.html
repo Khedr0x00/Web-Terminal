@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tabbed Web Terminal</title>
+    
+    <!-- Tailwind CSS CDN for modern styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Google Font for consistent typography -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    
+    <!-- xterm.js library and CSS for terminal emulation -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@4.17.0/css/xterm.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@4.17.0/lib/xterm.js"></script>
+    <!-- xterm.js addons for functionality like auto-fitting -->
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.5.0/lib/xterm-addon-fit.js"></script>
+    
+    <!-- SocketIO library for real-time communication with the Flask backend -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0a0a0a; /* Darker black background */
+            color: #39ff14; /* Neon green text */
+            display: flex;
+            min-height: 100vh;
+            padding: 0;
+            margin: 0;
+            overflow: hidden; /* Hide default body scrollbar */
+        }
+        
+        .main-content {
+            flex-grow: 1;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .sidebar {
+            width: 20rem; /* Fixed width for the sidebar */
+            background-color: #1a1a1a; /* Darker gray background for sidebar */
+            padding: 1.5rem;
+            border-left: 1px solid #39ff14; /* Neon green border */
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        /* Container for the file editor */
+        .file-editor-container {
+            width: 100%;
+            height: 40vh; /* Smaller fixed height for the editor */
+            max-width: 1000px;
+            margin: auto;
+            margin-bottom: 1.5rem;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            border: 1px solid #39ff14;
+            display: flex; /* Always display as a flex container */
+            flex-direction: column;
+            transition: height 0.3s ease-in-out;
+        }
+
+        /* Hide the editor with a smaller height */
+        .file-editor-container.hidden {
+            height: 0;
+            margin: 0;
+            border: none;
+            padding: 0;
+            overflow: hidden;
+        }
+        
+        /* Style the xterm.js container */
+        .terminal-container {
+            flex-grow: 1; /* Allow the terminal to take up remaining space */
+            width: 100%;
+            max-width: 1000px;
+            margin: auto;
+            border-radius: 8px;
+            overflow: hidden; /* Prevent content from spilling out */
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            border: 1px solid #39ff14;
+            position: relative;
+        }
+
+        /* Ensure the terminal itself is scrollable */
+        #terminal-panes {
+            height: 100%;
+            overflow-y: auto;
+        }
+
+        /* Custom scrollbar for xterm.js output */
+        .xterm-viewport::-webkit-scrollbar {
+            width: 12px;
+            height: 12px;
+        }
+        .xterm-viewport::-webkit-scrollbar-track {
+            background: #1a1a1a; /* Darker black */
+            border-radius: 10px;
+        }
+        .xterm-viewport::-webkit-scrollbar-thumb {
+            background-color: #39ff14; /* Neon green */
+            border-radius: 10px;
+            border: 3px solid #1a1a1a;
+        }
+        .xterm-viewport::-webkit-scrollbar-corner {
+            background: #1a1a1a;
+        }
+        .terminal-pane {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s ease-in-out;
+        }
+        .terminal-pane.active {
+            opacity: 1;
+            visibility: visible;
+        }
+        .rename-input {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 80%;
+            z-index: 10;
+        }
+
+        /* Custom styles for the tabs section to limit height and enable scrolling */
+        #tab-container {
+            max-height: 150px;
+            overflow-y: hidden;
+            transition: overflow-y 0.3s ease;
+        }
+        /* Custom styles for the commands section to limit height and enable scrolling */
+        #commands-list-container {
+            max-height: 150px;
+            overflow-y: hidden;
+            transition: overflow-y 0.3s ease;
+        }
+        /* Custom styles for the notes section to limit height and enable scrolling */
+        #notes-list-container {
+            max-height: 150px;
+            overflow-y: hidden;
+            transition: overflow-y 0.3s ease;
+        }
+        /* This class will be added to containers with more than 3 items */
+        .scrollable {
+            overflow-y: auto !important;
+        }
+        
+        /* Modal styles */
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        
+        .modal-content {
+            background-color: #1a1a1a;
+            padding: 2rem;
+            border-radius: 10px;
+            border: 1px solid #39ff14;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5);
+            width: 90%;
+            max-width: 500px;
+            color: #fff;
+        }
+    </style>
+</head>
+<body>
+    <!-- Main content area for the terminal view -->
+    <div class="main-content">
+        <!-- HEADER WITH SETTINGS BUTTON -->
+        <div class="flex items-center justify-center gap-4">
+            <h1 class="text-3xl font-bold text-39ff14 mb-4 text-center">Tabbed Web Terminal</h1>
+            <button id="settings-btn" class="bg-gray-600 hover:bg-gray-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-opacity-50 mb-4">
+                Settings
+            </button>
+        </div>
+        
+        <!-- Main container for the File Editor -->
+        <div id="file-editor-view" class="file-editor-container bg-gray-900 p-4 flex flex-col gap-2">
+            <div class="flex items-center justify-between">
+                <h2 id="current-file-name" class="text-xl font-bold text-39ff14"></h2>
+                <div class="flex items-center gap-2">
+                    <button id="run-file-btn" class="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-opacity-50">
+                        Run
+                    </button>
+                    <!-- New Replace Button -->
+                    <button id="replace-btn" class="bg-purple-600 hover:bg-purple-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-opacity-50">
+                        Replace
+                    </button>
+                    <button id="save-file-btn" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50">
+                        Save
+                    </button>
+                    <button id="close-editor-btn" class="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-50">
+                        Close
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Container for Find and Replace inputs -->
+            <div id="find-replace-container" class="hidden flex flex-col gap-2">
+                <div class="flex items-center gap-2">
+                    <input type="text" id="find-input" placeholder="Find text..." class="flex-1 bg-gray-800 text-white p-2 rounded-lg border border-gray-600 focus:outline-none focus:border-blue-500">
+                    <input type="text" id="replace-input" placeholder="Replace with..." class="flex-1 bg-gray-800 text-white p-2 rounded-lg border border-gray-600 focus:outline-none focus:border-blue-500">
+                    <button id="replace-all-btn" class="bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-50">
+                        Replace All
+                    </button>
+                </div>
+            </div>
+
+            <textarea id="file-content-editor" class="flex-grow bg-gray-800 text-white font-mono p-4 rounded-lg border border-gray-600 focus:outline-none focus:border-blue-500 text-sm"></textarea>
+        </div>
+        
+        <!-- Main container for the Terminal -->
+        <div id="terminal-view" class="terminal-container p-2 bg-gray-900 text-green-400 font-mono text-sm">
+            <div id="terminal-panes">
+                <!-- Terminal panes will be inserted here dynamically -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Right-side panel for tabs and controls -->
+    <div class="sidebar">
+        <div class="flex flex-col gap-4">
+            <div class="flex items-center justify-between">
+                <h2 class="text-xl font-bold text-39ff14">Terminals</h2>
+                <button id="new-tab-btn" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50">
+                    + New
+                </button>
+            </div>
+            
+            <!-- Search bar for terminals -->
+            <input type="text" id="search-bar" placeholder="Search terminals..." class="px-3 py-2 rounded-lg bg-gray-700 text-39ff14 placeholder-39ff14 focus:outline-none focus:ring-2 focus:ring-39ff14">
+            
+            <!-- Tab list container -->
+            <div id="tab-container" class="flex flex-col gap-2">
+                <!-- Tab buttons will be inserted here dynamically -->
+            </div>
+
+            <!-- Section for Database Commands -->
+            <hr class="border-39ff14 my-4">
+            <div class="flex items-center justify-between">
+                <h2 class="text-xl font-bold text-39ff14">Database Commands</h2>
+                <button id="new-command-btn" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50">
+                    + New
+                </button>
+            </div>
+            <input type="text" id="commands-search-bar" placeholder="Search commands..." class="px-3 py-2 rounded-lg bg-gray-700 text-39ff14 placeholder-39ff14 focus:outline-none focus:ring-2 focus:ring-39ff14">
+            
+            <!-- File list container for commands -->
+            <div id="commands-list-container" class="flex flex-col gap-2 text-sm">
+                <!-- Command files will be inserted here dynamically -->
+            </div>
+
+            <!-- New section for Database Notes -->
+            <hr class="border-39ff14 my-4">
+            <div class="flex items-center justify-between">
+                <h2 class="text-xl font-bold text-39ff14">Database Notes</h2>
+                <button id="new-note-btn" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50">
+                    + New
+                </button>
+            </div>
+            <input type="text" id="notes-search-bar" placeholder="Search notes..." class="px-3 py-2 rounded-lg bg-gray-700 text-39ff14 placeholder-39ff14 focus:outline-none focus:ring-2 focus:ring-39ff14">
+            
+            <!-- File list container for notes -->
+            <div id="notes-list-container" class="flex flex-col gap-2 text-sm">
+                <!-- Notes files will be inserted here dynamically -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for New File Creation (MODIFIED) -->
+    <div id="new-file-modal" class="modal">
+        <div class="modal-content">
+            <h3 class="text-xl font-bold mb-4 text-center">Create New File</h3>
+            <div class="flex flex-col gap-4">
+                <input type="text" id="new-file-name" placeholder="File Name (e.g., my file.txt)" class="px-3 py-2 rounded-lg bg-gray-800 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                
+                <!-- NEW: Path Selector -->
+                <select id="new-file-path-select" class="px-3 py-2 rounded-lg bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <!-- Options populated dynamically -->
+                </select>
+
+                <textarea id="new-file-content" placeholder="File Content" class="px-3 py-2 rounded-lg bg-gray-800 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 h-40"></textarea>
+                <div class="flex justify-end gap-2">
+                    <button id="cancel-new-file" class="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300">
+                        Cancel
+                    </button>
+                    <button id="save-new-file" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300">
+                        Save
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for Settings (MODIFIED) -->
+    <div id="settings-modal" class="modal">
+        <div class="modal-content">
+            <h3 class="text-xl font-bold mb-4 text-center">Application Settings</h3>
+            <div class="flex flex-col gap-4">
+                
+                <!-- Commands Path List Management -->
+                <label class="text-gray-300 font-semibold">Commands Paths</label>
+                <div id="commands-paths-list" class="flex flex-col gap-2 p-2 bg-gray-800 rounded-lg max-h-40 overflow-y-auto">
+                    <!-- Dynamic paths here -->
+                </div>
+                <div class="flex items-center gap-2">
+                    <input type="text" id="new-command-path-input" placeholder="New Commands Path (e.g., /home/user/my_cmds)" class="flex-grow px-3 py-2 rounded-lg bg-gray-800 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <button id="add-command-path-btn" class="bg-green-600 hover:bg-green-700 text-white font-semibold py-1 px-3 rounded-lg">Add</button>
+                </div>
+
+                <!-- Notes Path List Management -->
+                <label class="text-gray-300 font-semibold mt-4">Notes Paths</label>
+                <div id="notes-paths-list" class="flex flex-col gap-2 p-2 bg-gray-800 rounded-lg max-h-40 overflow-y-auto">
+                    <!-- Dynamic paths here -->
+                </div>
+                <div class="flex items-center gap-2">
+                    <input type="text" id="new-note-path-input" placeholder="New Notes Path (e.g., /mnt/docs/notes)" class="flex-grow px-3 py-2 rounded-lg bg-gray-800 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <button id="add-note-path-btn" class="bg-green-600 hover:bg-green-700 text-white font-semibold py-1 px-3 rounded-lg">Add</button>
+                </div>
+                
+                <p class="text-sm text-yellow-400 mt-4">Note: Changing paths will attempt to create the new directory and requires a file list refresh. Paths must not be empty.</p>
+
+                <div class="flex justify-end gap-2 mt-4">
+                    <button id="cancel-settings" class="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300">
+                        Cancel
+                    </button>
+                    <button id="save-settings" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300">
+                        Save Changes
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global variables for managing sessions and UI state
+        let tabs = {};
+        let tabCounter = 0;
+        let activeTabId = null;
+        let allCommands = []; // Array of {filename, path, display_path} objects
+        let allNotes = []; // Array of {filename, path, display_path} objects
+        let currentEditingFile = { name: null, directory: null, path: null }; // MODIFIED: Added 'path'
+        let commandsPaths = []; // NEW: Array to store all command paths
+        let notesPaths = []; // NEW: Array to store all notes paths
+        
+        // UI Elements
+        const terminalView = document.getElementById('terminal-view');
+        const fileEditorView = document.getElementById('file-editor-view');
+        const fileContentEditor = document.getElementById('file-content-editor');
+        const currentFileNameSpan = document.getElementById('current-file-name');
+        const saveFileBtn = document.getElementById('save-file-btn');
+        const runFileBtn = document.getElementById('run-file-btn');
+        const closeEditorBtn = document.getElementById('close-editor-btn');
+        const notesListContainer = document.getElementById('notes-list-container');
+        const tabContainer = document.getElementById('tab-container');
+        const commandsListContainer = document.getElementById('commands-list-container');
+        
+        // New UI elements for the replace functionality
+        const replaceBtn = document.getElementById('replace-btn');
+        const findReplaceContainer = document.getElementById('find-replace-container');
+        const findInput = document.getElementById('find-input');
+        const replaceInput = document.getElementById('replace-input');
+        const replaceAllBtn = document.getElementById('replace-all-btn');
+
+        // New UI Elements for file creation modal
+        const newFileModal = document.getElementById('new-file-modal');
+        const newFileNameInput = document.getElementById('new-file-name');
+        const newFilePathSelect = document.getElementById('new-file-path-select'); // NEW
+        const newFileContentTextarea = document.getElementById('new-file-content');
+        const saveNewFileBtn = document.getElementById('save-new-file');
+        const cancelNewFileBtn = document.getElementById('cancel-new-file');
+        let currentCreationDirectory = null;
+        
+        // NEW UI Elements for settings modal (MODIFIED)
+        const settingsBtn = document.getElementById('settings-btn');
+        const settingsModal = document.getElementById('settings-modal');
+        // Removed old single-path inputs
+        const commandsPathsList = document.getElementById('commands-paths-list');
+        const newCommandPathInput = document.getElementById('new-command-path-input');
+        const addCommandPathBtn = document.getElementById('add-command-path-btn');
+        const notesPathsList = document.getElementById('notes-paths-list');
+        const newNotePathInput = document.getElementById('new-note-path-input');
+        const addNotePathBtn = document.getElementById('add-note-path-btn');
+        const saveSettingsBtn = document.getElementById('save-settings');
+        const cancelSettingsBtn = document.getElementById('cancel-settings');
+
+
+        /**
+         * Creates a new terminal tab and session.
+         */
+        function createNewTab() {
+            // Generate a unique ID for the new tab
+            const tabId = `tab-${++tabCounter}`;
+
+            // --- UI Creation ---
+            const tabButton = document.createElement('button');
+            tabButton.id = `btn-${tabId}`;
+            tabButton.className = 'relative py-2 px-4 rounded-lg bg-gray-700 text-gray-300 font-medium transition-colors duration-200 hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 text-left';
+            tabContainer.appendChild(tabButton);
+
+            const tabText = document.createElement('span');
+            tabText.textContent = `Terminal ${tabCounter}`;
+            tabButton.appendChild(tabText);
+
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'absolute top-0 left-0 w-full h-full bg-gray-800 text-white rounded-lg px-2 text-center border-none focus:outline-none';
+            input.style.display = 'none'; // Initially hidden
+            tabButton.appendChild(input);
+
+            const terminalPane = document.createElement('div');
+            terminalPane.id = `pane-${tabId}`;
+            terminalPane.className = 'terminal-pane';
+            document.getElementById('terminal-panes').appendChild(terminalPane);
+
+            // --- Terminal and Socket Initialization ---
+            const term = new Terminal({
+                cursorBlink: true,
+                convertEol: true,
+                theme: {
+                    background: '#0a0a0a',
+                    foreground: '#39ff14'
+                }
+            });
+
+            const fitAddon = new FitAddon.FitAddon();
+            term.loadAddon(fitAddon);
+            const socket = io();
+
+            tabs[tabId] = {
+                term,
+                socket,
+                fitAddon,
+                tabButton,
+                terminalPane
+            };
+
+            term.open(terminalPane);
+            fitAddon.fit();
+            
+            socket.on('terminal_output', (data) => {
+                term.write(data.data);
+            });
+
+            // MODIFIED: Store the file path as well
+            socket.on('file_content_for_editor', (data) => {
+                if (data.content !== undefined && data.content.startsWith('Error:')) {
+                     // Display a general error message
+                     currentFileNameSpan.textContent = data.filename;
+                     fileContentEditor.value = data.content;
+                     currentEditingFile.name = null; // Invalidate current file
+                     currentEditingFile.directory = null;
+                     currentEditingFile.path = null;
+                     fileEditorView.classList.remove('hidden');
+                     return;
+                }
+                
+                if (data.content !== undefined) {
+                    fileContentEditor.value = data.content;
+                    currentFileNameSpan.textContent = data.filename;
+                    currentEditingFile.name = data.filename;
+                    currentEditingFile.directory = data.directory;
+                    currentEditingFile.path = data.path; // NEW: Store the path
+                    fileEditorView.classList.remove('hidden');
+                } else {
+                    // This is a modal-like behavior for alerts, avoiding the native alert()
+                    const alertModal = document.getElementById('new-file-modal');
+                    const alertMessage = alertModal.querySelector('.modal-content h3');
+                    const alertContent = alertModal.querySelector('.modal-content .flex-col');
+                    
+                    alertMessage.textContent = 'Error';
+                    alertContent.innerHTML = `<p class="text-center text-red-400">${data.content}</p>`;
+                    alertModal.style.display = 'flex';
+                }
+            });
+            
+            // MODIFIED: Expects an array of {filename, path, display_path} objects
+            socket.on('file_list', (data) => {
+                if (data.directory === "commands") {
+                    allCommands = data.files;
+                    renderFiles('commands', allCommands);
+                } else if (data.directory === "notes") {
+                    allNotes = data.files;
+                    renderFiles('notes', allNotes);
+                }
+            });
+
+            socket.on('file_creation_status', (data) => {
+                if (data.success) {
+                    newFileModal.style.display = 'none';
+                    // The server will automatically refresh the file list
+                } else {
+                    const alertModal = document.getElementById('new-file-modal');
+                    const alertMessage = alertModal.querySelector('.modal-content h3');
+                    const alertContent = alertModal.querySelector('.modal-content .flex-col');
+                    
+                    alertMessage.textContent = 'Error';
+                    // Re-render the form content
+                    alertContent.innerHTML = `
+                        <input type="text" id="new-file-name" placeholder="File Name (e.g., my file.txt)" class="px-3 py-2 rounded-lg bg-gray-800 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <select id="new-file-path-select" class="px-3 py-2 rounded-lg bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"></select>
+                        <textarea id="new-file-content" placeholder="File Content" class="px-3 py-2 rounded-lg bg-gray-800 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 h-40"></textarea>
+                        <p class="text-center text-red-400 mt-2">Error: ${data.message}</p>
+                        <div class="flex justify-end gap-2 mt-4">
+                            <button id="cancel-new-file" class="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300">Cancel</button>
+                            <button id="save-new-file" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300">Save</button>
+                        </div>
+                    `;
+                    alertModal.style.display = 'flex';
+                }
+            });
+
+            // NEW: Receive current path settings (now expects arrays)
+            socket.on('current_paths', (data) => {
+                commandsPaths = data.commands_paths || [];
+                notesPaths = data.notes_paths || [];
+                
+                // Only render the paths list if the settings modal is open (better UX)
+                if (settingsModal.style.display === 'flex') {
+                    renderPathsList('commands', commandsPaths);
+                    renderPathsList('notes', notesPaths);
+                }
+            });
+            
+            // NEW: Receive signal that paths were updated on the server
+            socket.on('paths_updated', (data) => {
+                if (data.success) {
+                    // Refetch files from the new directories
+                    fetchFiles('commands');
+                    fetchFiles('notes');
+                    // Ensure the current paths in the modal are updated to reflect the new state
+                    socket.emit('get_current_paths'); 
+                }
+            });
+
+            // Send keyboard input to the server
+            term.onData(data => {
+                socket.emit('terminal_input', { 'command': data });
+            });
+
+            // --- UI Event Handlers ---
+            tabButton.addEventListener('click', (e) => {
+                if (e.target !== input) {
+                    activateTab(tabId);
+                }
+            });
+            
+            tabButton.addEventListener('dblclick', (e) => {
+                tabText.style.display = 'none';
+                input.style.display = 'block';
+                input.value = tabText.textContent;
+                input.focus();
+                e.stopPropagation();
+            });
+
+            const finalizeRename = () => {
+                let newName = input.value.trim();
+                if (newName === '') {
+                    newName = tabText.textContent;
+                }
+                tabText.textContent = newName;
+                input.style.display = 'none';
+                tabText.style.display = 'inline';
+            };
+
+            input.addEventListener('blur', finalizeRename);
+            input.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter') {
+                    finalizeRename();
+                }
+            });
+            renderTerminals();
+            activateTab(tabId);
+        }
+
+        /**
+         * Sets a tab as the active one, updating UI and event listeners.
+         * @param {string} tabId - The ID of the tab to activate.
+         */
+        function activateTab(tabId) {
+            if (activeTabId !== null && tabs[activeTabId]) {
+                const oldTab = tabs[activeTabId];
+                oldTab.terminalPane.classList.remove('active');
+                oldTab.tabButton.classList.remove('bg-blue-600', 'text-white');
+                oldTab.tabButton.classList.add('bg-gray-700', 'text-gray-300');
+            }
+
+            const newTab = tabs[tabId];
+            if (newTab) {
+                newTab.terminalPane.classList.add('active');
+                newTab.tabButton.classList.remove('bg-gray-700', 'text-gray-300');
+                newTab.tabButton.classList.add('bg-blue-600', 'text-white');
+                newTab.term.focus();
+                newTab.fitAddon.fit();
+                activeTabId = tabId;
+            }
+        }
+
+        /**
+         * Renders the list of terminals, applying the 3-item limit and scrollbar logic.
+         * @param {string} query - The search query.
+         */
+        function renderTerminals(query = '') {
+            const normalizedQuery = query.toLowerCase().trim();
+            const tabButtons = Object.values(tabs).map(tab => tab.tabButton);
+            
+            tabButtons.forEach(button => {
+                const tabText = button.querySelector('span').textContent;
+                if (tabText.toLowerCase().includes(normalizedQuery)) {
+                    button.style.display = 'block';
+                } else {
+                    button.style.display = 'none';
+                }
+            });
+
+            if (Object.keys(tabs).length > 3) {
+                tabContainer.classList.add('scrollable');
+            } else {
+                tabContainer.classList.remove('scrollable');
+            }
+        }
+
+        /**
+         * Filters the list of terminals based on the search input.
+         * @param {string} query - The search query.
+         */
+        function searchTerminals(query) {
+            renderTerminals(query);
+        }
+        
+        /**
+         * Fetches a list of files from the server.
+         * @param {string} directory - The directory type to fetch files from ('commands' or 'notes').
+         */
+        function fetchFiles(directory) {
+            if (tabs['tab-1'] && tabs['tab-1'].socket) {
+                const socket = tabs['tab-1'].socket;
+                socket.emit('get_files', { directory: directory });
+            }
+        }
+        
+        /**
+         * Renders the list of paths in the settings modal.
+         * @param {string} directoryType - 'commands' or 'notes'.
+         * @param {string[]} paths - Array of path strings.
+         */
+        function renderPathsList(directoryType, paths) {
+            const listContainer = directoryType === 'commands' ? commandsPathsList : notesPathsList;
+            listContainer.innerHTML = '';
+
+            // Filter out empty strings and ensure uniqueness before rendering
+            const uniquePaths = Array.from(new Set(paths.filter(p => p.trim() !== '')));
+
+            uniquePaths.forEach((path) => {
+                const pathItem = document.createElement('div');
+                pathItem.className = 'flex items-center justify-between bg-gray-700 p-2 rounded';
+                pathItem.innerHTML = `
+                    <span class="text-sm flex-grow">${path}</span>
+                    <button data-path="${path}" data-type="${directoryType}" class="remove-path-btn text-red-400 hover:text-red-500 ml-4 font-bold text-xs">Remove</button>
+                `;
+                listContainer.appendChild(pathItem);
+            });
+
+            // Re-attach event listeners to all remove buttons
+            listContainer.querySelectorAll('.remove-path-btn').forEach(button => {
+                button.addEventListener('click', (e) => {
+                    const pathToRemove = e.target.dataset.path;
+                    const type = e.target.dataset.type;
+                    
+                    if (type === 'commands') {
+                        commandsPaths = commandsPaths.filter(p => p !== pathToRemove);
+                        renderPathsList('commands', commandsPaths);
+                    } else if (type === 'notes') {
+                        notesPaths = notesPaths.filter(p => p !== pathToRemove);
+                        renderPathsList('notes', notesPaths);
+                    }
+                });
+            });
+        }
+        
+        /**
+         * Renders the list of files in the sidebar.
+         * @param {string} directory - The directory type name.
+         * @param {Object[]} files - An array of file objects {filename, path, display_path}.
+         */
+        function renderFiles(directory, files) {
+            const fileListContainer = document.getElementById(`${directory}-list-container`);
+            fileListContainer.innerHTML = '';
+            
+            files.forEach(fileObj => {
+                // fileObj is {filename: "ls_command.sh", path: "commands/dev", display_path: "commands/dev"}
+                
+                let displayName = fileObj.filename;
+                const lastDotIndex = fileObj.filename.lastIndexOf('.');
+                if (lastDotIndex > 0) { 
+                    displayName = fileObj.filename.substring(0, lastDotIndex);
+                }
+
+                const fileItemContainer = document.createElement('div');
+                fileItemContainer.className = 'py-1 px-4 rounded-lg bg-gray-600 text-gray-200 flex flex-col items-start justify-between transition-colors duration-200';
+
+                const fileNameSpan = document.createElement('span');
+                fileNameSpan.textContent = displayName;
+                fileNameSpan.className = 'cursor-pointer hover:underline font-bold';
+                
+                // Show the path where the file is located
+                const filePathSpan = document.createElement('span');
+                filePathSpan.textContent = `Path: ${fileObj.display_path}`;
+                filePathSpan.className = 'text-xs text-gray-400 italic';
+                
+                // On click, pass the full path and filename
+                fileItemContainer.onclick = () => {
+                    const activeTerminalSocket = tabs[activeTabId].socket;
+                    if (activeTerminalSocket) {
+                        activeTerminalSocket.emit('get_file_content_for_editor', { 
+                            filename: fileObj.filename, 
+                            directory: directory, 
+                            path: fileObj.path // IMPORTANT: Pass the specific file path
+                        });
+                    }
+                };
+
+                fileItemContainer.appendChild(fileNameSpan);
+                fileItemContainer.appendChild(filePathSpan);
+                fileListContainer.appendChild(fileItemContainer);
+            });
+            
+            if (files.length > 3) {
+                fileListContainer.classList.add('scrollable');
+            } else {
+                fileListContainer.classList.remove('scrollable');
+            }
+        }
+        
+        /**
+         * Filters the list of files based on the search input.
+         * This now searches by filename and file path.
+         * @param {string} directory - The directory to search in ('commands' or 'notes').
+         * @param {string} query - The search query.
+         */
+        function searchFiles(directory, query) {
+            const normalizedQuery = query.toLowerCase().trim();
+            const searchWords = normalizedQuery.split(/\s+/).filter(Boolean);
+            const allFiles = directory === 'commands' ? allCommands : allNotes;
+            
+            const filteredFiles = allFiles.filter(fileObj => {
+                const normalizedFilename = fileObj.filename.toLowerCase();
+                const normalizedPath = fileObj.display_path.toLowerCase();
+                // Check if the filename OR path contains all search words
+                return searchWords.every(word => normalizedFilename.includes(word) || normalizedPath.includes(word));
+            });
+            
+            renderFiles(directory, filteredFiles);
+        }
+
+        // Main entry point for the application.
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('new-tab-btn').addEventListener('click', createNewTab);
+            
+            // MODIFIED: Open modal logic to populate the new path selector
+            const openNewFileModal = (directory) => {
+                currentCreationDirectory = directory;
+                newFileModal.style.display = 'flex';
+                newFileNameInput.value = '';
+                newFileContentTextarea.value = '';
+                
+                // Dynamically populate the path selector
+                const paths = directory === 'commands' ? commandsPaths : notesPaths;
+                newFilePathSelect.innerHTML = '';
+                
+                if (paths.length === 0) {
+                     newFilePathSelect.innerHTML = `<option value="">-- No paths configured --</option>`;
+                     saveNewFileBtn.disabled = true;
+                } else {
+                    paths.forEach(path => {
+                        const option = document.createElement('option');
+                        option.value = path;
+                        option.textContent = path;
+                        newFilePathSelect.appendChild(option);
+                    });
+                    saveNewFileBtn.disabled = false;
+                }
+            };
+            
+            document.getElementById('new-command-btn').addEventListener('click', () => openNewFileModal('commands'));
+            document.getElementById('new-note-btn').addEventListener('click', () => openNewFileModal('notes'));
+
+            document.getElementById('search-bar').addEventListener('input', (event) => {
+                searchTerminals(event.target.value);
+            });
+            document.getElementById('commands-search-bar').addEventListener('input', (event) => {
+                searchFiles('commands', event.target.value);
+            });
+            document.getElementById('notes-search-bar').addEventListener('input', (event) => {
+                searchFiles('notes', event.target.value);
+            });
+            window.addEventListener('resize', () => {
+                if (activeTabId && tabs[activeTabId]) {
+                    tabs[activeTabId].fitAddon.fit();
+                }
+            });
+            
+            // MODIFIED: Add currentEditingFile.path to save_file payload
+            saveFileBtn.addEventListener('click', () => {
+                const activeTerminalSocket = tabs[activeTabId].socket;
+                if (activeTerminalSocket && currentEditingFile.name && currentEditingFile.path) {
+                    activeTerminalSocket.emit('save_file', {
+                        filename: currentEditingFile.name,
+                        content: fileContentEditor.value,
+                        directory: currentEditingFile.directory,
+                        path: currentEditingFile.path // NEW: Pass the file's source path
+                    });
+                } else {
+                    alert("Error: No file selected or file path is missing.");
+                }
+            });
+
+            // MODIFIED: Add currentEditingFile.path to run_file payload
+            runFileBtn.addEventListener('click', () => {
+                const activeTerminalSocket = tabs[activeTabId].socket;
+                if (activeTerminalSocket && currentEditingFile.name) {
+                    activeTerminalSocket.emit('run_file', {
+                        filename: currentEditingFile.name,
+                        content: fileContentEditor.value,
+                        directory: currentEditingFile.directory,
+                        path: currentEditingFile.path // Pass the file's source path for context
+                    });
+                } else {
+                    alert("Error: No file selected or file path is missing.");
+                }
+            });
+            
+            closeEditorBtn.addEventListener('click', () => {
+                fileEditorView.classList.add('hidden');
+                if (activeTabId && tabs[activeTabId]) {
+                    tabs[activeTabId].term.focus();
+                }
+            });
+            
+            // MODIFIED: Add newFilePathSelect.value to create_file payload
+            saveNewFileBtn.addEventListener('click', () => {
+                let filename = newFileNameInput.value.trim();
+                const content = newFileContentTextarea.value;
+                const targetPath = newFilePathSelect.value; // NEW: Get selected path
+                
+                if (!targetPath) {
+                    alert('Please select a folder to save the file.');
+                    return;
+                }
+
+                if (filename.length > 0) {
+                    const hasExtension = filename.includes('.');
+                    
+                    if (currentCreationDirectory === 'notes' && !hasExtension) {
+                        filename += '.txt';
+                    } else if (currentCreationDirectory === 'commands' && !hasExtension) {
+                        // Change for Linux convention
+                        filename += '.sh'; 
+                    }
+                }
+                
+                if (filename && currentCreationDirectory && targetPath) {
+                    const activeTerminalSocket = tabs[activeTabId].socket;
+                    if (activeTerminalSocket) {
+                        activeTerminalSocket.emit('create_file', {
+                            filename: filename,
+                            content: content,
+                            directory: currentCreationDirectory,
+                            target_path: targetPath // NEW: Pass the chosen path
+                        });
+                    }
+                } else {
+                    alert('Please enter a file name.');
+                }
+            });
+            
+            cancelNewFileBtn.addEventListener('click', () => {
+                newFileModal.style.display = 'none';
+            });
+
+            // New event listeners for the replace functionality
+            replaceBtn.addEventListener('click', () => {
+                findReplaceContainer.classList.toggle('hidden');
+                findInput.focus();
+            });
+
+            replaceAllBtn.addEventListener('click', () => {
+                const findText = findInput.value;
+                const replaceText = replaceInput.value;
+                const originalContent = fileContentEditor.value;
+
+                // Escape special regex characters in the find text
+                const escapedFindText = findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                
+                // Create a global regular expression
+                const regex = new RegExp(escapedFindText, 'g');
+
+                // Perform the replacement
+                const newContent = originalContent.replace(regex, replaceText);
+                
+                fileContentEditor.value = newContent;
+                findReplaceContainer.classList.add('hidden');
+            });
+            
+            // NEW: Settings Modal Add Path buttons
+            addCommandPathBtn.addEventListener('click', () => {
+                const newPath = newCommandPathInput.value.trim();
+                if (newPath && !commandsPaths.includes(newPath)) {
+                    commandsPaths.push(newPath);
+                    renderPathsList('commands', commandsPaths);
+                    newCommandPathInput.value = '';
+                }
+            });
+            
+            addNotePathBtn.addEventListener('click', () => {
+                const newPath = newNotePathInput.value.trim();
+                if (newPath && !notesPaths.includes(newPath)) {
+                    notesPaths.push(newPath);
+                    renderPathsList('notes', notesPaths);
+                    newNotePathInput.value = '';
+                }
+            });
+
+            // NEW: Add event listeners for the settings modal
+            settingsBtn.addEventListener('click', () => {
+                settingsModal.style.display = 'flex';
+                // Request the current paths from the server to pre-populate the inputs
+                if (activeTabId && tabs[activeTabId]) {
+                    tabs[activeTabId].socket.emit('get_current_paths');
+                }
+            });
+            
+            cancelSettingsBtn.addEventListener('click', () => {
+                settingsModal.style.display = 'none';
+            });
+            
+            // MODIFIED: Send the full lists of paths instead of single inputs
+            saveSettingsBtn.addEventListener('click', () => {
+                const activeTerminalSocket = tabs[activeTabId].socket;
+                if (activeTerminalSocket) {
+                    // Send the full lists of paths back to the server
+                    activeTerminalSocket.emit('set_paths', {
+                        commands_paths: commandsPaths,
+                        notes_paths: notesPaths
+                    });
+                    settingsModal.style.display = 'none';
+                }
+            });
+
+
+            // Create the first default tab and fetch files from both directories
+            createNewTab();
+            fetchFiles('commands');
+            fetchFiles('notes');
+        });
+    </script>
+</body>
+</html>
