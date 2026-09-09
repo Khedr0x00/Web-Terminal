@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Runtime state
+paths.json
+
+# OS
+.DS_Store
+Thumbs.db
